@@ -5,195 +5,104 @@ from scipy.integrate import solve_ivp
 from scipy.optimize import curve_fit
 import pandas as pd
 
-st.title("📈 Perovskite Interface Kinetics Visualizer (Extended Model)")
-
-st.markdown("""
-Interactive simulation of transient photoluminescence (PL) for a perovskite–PTAA interface,  
-based on the kinetic model of **Lee et al. (2024)**, extended with optional **hole traps**  
-and physically computed trapping/detrapping rates.
-
-Features:
-- Grouped parameter expanders for clarity  
-- Compute rates from cross-sections and trap depths  
-- Fit PL decays, show trap dynamics  
-- Sweep parameters, analyze τ₁, τ₂, and Sₑff trends  
-- Export results as CSV
-""")
-
-# ---------- Physical constants ----------
+# ----------------------------- CONSTANTS --------------------------------
 k_B = 8.617333e-5  # eV/K
-m_e0 = 9.11e-28    # g
+m_e0 = 9.11e-28
 m_eff = 0.2 * m_e0
-nu0 = 1e13         # s^-1 attempt frequency
+nu0 = 1e13  # s^-1
 
 def v_thermal(T):
     k_B_erg = 1.380649e-16
-    return np.sqrt(3*k_B_erg*T/m_eff)*1e2  # cm/s
+    return np.sqrt(3 * k_B_erg * T / m_eff) * 1e2  # cm/s
 
-# ---------- Sidebar ----------
-st.sidebar.header("Model Setup")
+# -------------------------- APP TITLE -----------------------------------
+st.title("📈 Transient PL Simulator (Extended SRH & Interface Model)")
+
+# -------------------------- SIDEBAR SETUP -------------------------------
+st.sidebar.header("Model setup")
 
 with st.sidebar.expander("🌡️ Global parameters"):
-    use_physical = st.checkbox("Compute trap rates from cross section & depth", value=True)
+    use_physical = st.checkbox("Compute trap rates from σ and E_t", value=True)
     T = st.number_input("Temperature (K)", 50.0, 1000.0, 300.0, step=10.0)
     R_eh = st.number_input("Radiative recombination R_eh (cm³/s)", 1e-30, 1e30, 1e-10, format="%.1e")
     L = st.number_input("Film thickness L (cm)", 1e-9, 1e2, 5e-5, format="%.1e")
 
-# ---- Electron traps ----
+vth = v_thermal(T)
+
+# ---------- Electron traps ----------
+# ---------- Electron traps ----------
 with st.sidebar.expander("🧲 Electron traps"):
     N_t_e = st.number_input("Electron trap density N_t_e (cm⁻³)", 1e0, 1e30, 1e15, format="%.1e")
+
     if use_physical:
-        sigma_e = st.number_input("Capture cross section σ_e (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
-        E_t_e = st.number_input("Trap depth E_t_e (eV below CB)", 0.0, 2.0, 0.4, step=0.05)
-        vth = v_thermal(T)
-        R_pop_e = sigma_e * vth
-        k_detrap_e = nu0 * np.exp(-E_t_e / (k_B*T))
-        st.write(f"→ R_pop_e = {R_pop_e:.2e} cm³/s,  k_detrap_e = {k_detrap_e:.2e} s⁻¹")
+        sigma_e = st.number_input("Electron capture σ_e (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
+        E_t_e   = st.number_input("Trap depth E_t_e (eV below CB)", 0.0, 2.0, 0.4, step=0.05)
+        sigma_h_trap = st.number_input("Hole capture σ_h^(trap) (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
+
+        R_pop_e    = sigma_e * vth
+        R_depop_e  = sigma_h_trap * vth
+        k_detrap_e = nu0 * np.exp(-E_t_e / (k_B * T))
+
+        st.write(f"→ R_pop_e = {R_pop_e:.2e} cm³/s")
+        st.write(f"→ R_depop_e = {R_depop_e:.2e} cm³/s  (hole capture)")
+        st.write(f"→ k_detrap_e = {k_detrap_e:.2e} s⁻¹")
+
     else:
-        R_pop_e = st.number_input("Electron trapping R_pop_e (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
-        k_detrap_e = st.number_input("Electron detrapping k_detrap_e (s⁻¹)", 1e0, 1e30, 1e5, format="%.1e")
-    R_depop_e = st.number_input("SRH (hole capture) R_depop_e (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
-
-# ---- SRH hole capture coefficient (R_depop_e) ----
-with st.sidebar.expander("🌀 SRH recombination (hole capture on electron traps)"):
-    sigma_h_trap = st.number_input("Hole capture cross section σ_h^(trap) (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
-    R_depop_e = sigma_h_trap * v_thermal(T)
-    st.write(f"→ R_depop_e = {R_depop_e:.2e} cm³/s  (from σ_h^(trap) × v_th)")
+        R_pop_e    = st.number_input("R_pop_e (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
+        R_depop_e  = st.number_input("R_depop_e (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
+        k_detrap_e = st.number_input("k_detrap_e (s⁻¹)", 1e0, 1e30, 1e5, format="%.1e")
 
 
-# ---- Hole traps ----
+# ---------- Hole traps ----------
 with st.sidebar.expander("⚡ Hole traps (optional)"):
     use_hole_traps = st.checkbox("Enable hole traps", value=False)
-    N_t_h = 0.0; R_pop_h = R_depop_h = k_detrap_h = 0.0
+    N_t_h = R_pop_h = R_depop_h = k_detrap_h = 0.0
     if use_hole_traps:
         N_t_h = st.number_input("Hole trap density N_t_h (cm⁻³)", 1e0, 1e30, 1e15, format="%.1e")
         if use_physical:
-            sigma_h = st.number_input("Capture cross section σ_h (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
+            sigma_h = st.number_input("σ_h (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
             E_t_h = st.number_input("Trap depth E_t_h (eV above VB)", 0.0, 2.0, 0.4, step=0.05)
-            R_pop_h = sigma_h * v_thermal(T)
-            k_detrap_h = nu0 * np.exp(-E_t_h / (k_B*T))
+            R_pop_h = sigma_h * vth
+            k_detrap_h = nu0 * np.exp(-E_t_h / (k_B * T))
             st.write(f"→ R_pop_h = {R_pop_h:.2e} cm³/s,  k_detrap_h = {k_detrap_h:.2e} s⁻¹")
         else:
-            R_pop_h = st.number_input("Hole trapping R_pop_h (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
-            k_detrap_h = st.number_input("Hole detrapping k_detrap_h (s⁻¹)", 1e0, 1e30, 1e5, format="%.1e")
-        R_depop_h = st.number_input("SRH (electron capture) R_depop_h (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
+            R_pop_h = st.number_input("R_pop_h (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
+            k_detrap_h = st.number_input("k_detrap_h (s⁻¹)", 1e0, 1e30, 1e5, format="%.1e")
+        R_depop_h = st.number_input("R_depop_h (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
 
-# ---- Extraction & interface ----
+# ---------- Interface parameters ----------
 with st.sidebar.expander("🔄 Extraction & interface"):
     k_ht = st.number_input("Hole transfer k_ht (s⁻¹)", 1e0, 1e30, 1e8, format="%.1e")
     k_hbt = st.number_input("Back transfer k_hbt (s⁻¹)", 1e0, 1e30, 1e6, format="%.1e")
-    R_AI = st.number_input("Interface recombination R_AI (cm³/s)", 1e-30, 1e30, 1e-8, format="%.1e")
 
-# ---- Initial conditions ----
+    # R_AI as direct effective parameter
+    R_AI = st.number_input("Interface recombination R_AI (cm³/s)",
+                           1e-20, 1e-3, 1e-8, format="%.1e")
+
+    st.markdown("**Optional: interface-trap-based S estimate (not directly used in ODE)**")
+    N_it = st.number_input("Interface trap density N_it (cm⁻²)", 1e8, 1e15, 1e12, format="%.1e")
+    sigma_n_int = st.number_input("Electron σ_n,int (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
+    sigma_p_int = st.number_input("Hole σ_p,int (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
+    S_int = (sigma_n_int + sigma_p_int) * vth * N_it  # cm/s
+    st.write(f"→ S_int ≈ {S_int:.2e} cm/s (for reference only)")
+
+
+# ---------- Initial conditions ----------
 with st.sidebar.expander("🧮 Initial conditions"):
     n0 = st.number_input("Initial carrier density n0 (cm⁻³)", 1e0, 1e30, 1e15, format="%.1e")
     f_nt0 = st.number_input("Initial electron trap occupancy f_nt0 (0–1)", 0.0, 1.0, 0.0, step=0.05)
     f_pt0 = st.number_input("Initial hole trap occupancy f_pt0 (0–1)", 0.0, 1.0, 0.0, step=0.05)
 
-# ---- Simulation settings ----
+# ---------- Simulation options ----------
 with st.sidebar.expander("⚙️ Simulation options"):
     do_fit = st.checkbox("Fit double exponential", value=True)
-    normalize_pl = st.checkbox("Normalize PL to unity", value=True)
-    log_xaxis = st.checkbox("Use logarithmic time axis", value=True)
-    show_Seff = st.checkbox("Show Seff vs parameter (right axis)", value=True)
+    normalize_pl = st.checkbox("Normalize PL", value=True)
+    log_xaxis = st.checkbox("Logarithmic x-axis", value=True)
 
-with st.sidebar.expander("📘 Physical meaning & formulas"):
-    st.markdown(r"""
-**Thermal velocity**
-\[
-v_{th} = \sqrt{\frac{3 k_B T}{m^*}}
-\]
-**Trapping (capture) rate constant**
-\[
-R_\text{pop} = \sigma \, v_{th}
-\]
-**Detrapping (thermal emission) rate**
-\[
-k_\text{detrap} = \nu_0 \, e^{-E_t / k_B T}
-\]
-where  
-- \( \sigma \) – capture cross section (cm²)  
-- \( m^* \) – effective mass (~0.2 mₑ for perovskites)  
-- \( \nu_0 \) – attempt frequency (~10¹³ s⁻¹)  
-- \( E_t \) – trap depth (eV)  
-- \( T \) – temperature (K)
-""")
-    st.info("Tip: smaller σ → slower trapping; deeper E_t → slower detrapping.")
-
-with st.sidebar.expander("📘 Physical meaning, formulas, and reference values"):
-    st.markdown(r"""
-### Fundamental relations
-**Thermal velocity**
-\[
-v_{th} = \sqrt{\frac{3 k_B T}{m^*}}
-\]
-
-**Trapping (capture) coefficient**
-\[
-R_{pop} = \sigma \, v_{th}
-\]
-
-**Detrapping (thermal emission) rate**
-\[
-k_{detrap} = \nu_0 \, e^{-E_t / (k_B T)}
-\]
-
-**Shockley–Read–Hall recombination step**
-\[
-R_{depop,e} = \sigma_h^{(trap)} \, v_{th,h}
-\]
-*(hole capture by filled electron traps)*
-
----
-
-### Typical constants and values
-| Quantity | Symbol | Typical value | Units | Notes |
-|-----------|---------|----------------|--------|-------|
-| Boltzmann constant | k_B | 8.617×10⁻⁵ | eV/K | |
-| Effective mass | m* | 0.2 mₑ | – | halide perovskite |
-| Attempt frequency | ν₀ | 10¹³ | s⁻¹ | phonon frequency |
-| Thermal velocity | v_th | 1–2×10⁷ | cm/s | at 300 K |
-| Capture cross section | σ | 10⁻¹⁶–10⁻¹⁸ | cm² | defect-dependent |
-| Trap depth | E_t | 0.3–0.6 | eV | below CB or above VB |
-| R_pop (σv_th) | – | 10⁻⁹–10⁻¹¹ | cm³/s | trapping coefficient |
-| k_detrap (ν₀e⁻ᴱ/ᵏᵀ) | – | 10⁰–10⁶ | s⁻¹ | depends exponentially on E_t |
-
----
-
-💡 **Intuition:**  
-- Large σ → fast trapping  
-- Deep E_t → slow detrapping  
-- Shallow traps (E_t ≈ 0.3 eV) empty quickly (k_detrap ≈ 10⁶ s⁻¹)  
-- Deep traps (E_t ≈ 0.6 eV) are long-lived (k_detrap ≈ 10² s⁻¹)
-""")
-
-    # --- Interactive detrapping-rate calculator ---
-    st.markdown("---")
-    st.markdown("### 🔬 Detrapping rate explorer")
-    st.markdown("Compute and visualize how k_detrap varies with trap depth and temperature.")
-
-    T_calc = st.number_input("Temperature for plot (K)", 100, 800, int(T), step=50)
-    E_min, E_max = 0.1, 0.8
-    E_vals = np.linspace(E_min, E_max, 200)
-    k_vals = nu0 * np.exp(-E_vals / (k_B * T_calc))
-
-    fig_calc, ax_calc = plt.subplots()
-    ax_calc.semilogy(E_vals, k_vals)
-    ax_calc.set_xlabel("Trap depth E_t (eV)")
-    ax_calc.set_ylabel("k_detrap (s⁻¹)")
-    ax_calc.set_title(f"Thermal emission rate vs. trap depth (T = {T_calc} K)")
-    ax_calc.grid(True, which="both", ls="--", lw=0.5)
-    st.pyplot(fig_calc)
-
-    k_example = nu0 * np.exp(-E_t_e / (k_B * T))
-    st.markdown(f"**Example:** For Eₜ = {E_t_e:.2f} eV at {T:.0f} K → k_detrap = {k_example:.2e} s⁻¹")
-
-
-# ---------- Time grid ----------
+# -------------------------- KINETIC MODEL -------------------------------
 t_eval = np.logspace(-9, -5, 400)
 t_span = (t_eval[0], t_eval[-1])
 
-# ---------- Differential equations ----------
 def deriv(t, y):
     if use_hole_traps:
         ne, nh, nt, pt, nhPTAA = y
@@ -201,63 +110,67 @@ def deriv(t, y):
         ne, nh, nt, nhPTAA = y
         pt = 0.0
 
-    dne = (
-        - R_eh * ne * nh
-        - R_pop_e * (N_t_e - nt) * ne
-        - R_depop_h * pt * ne
-        - R_AI * ne * nhPTAA
-        + k_detrap_e * nt
-    )
+    dne = (-R_eh*ne*nh
+           - R_pop_e*(N_t_e-nt)*ne
+           - R_depop_h*pt*ne
+           - R_AI*ne*nhPTAA
+           + k_detrap_e*nt)
 
-    dnh = (
-        - R_eh * ne * nh
-        - R_depop_e * nt * nh
-        - R_pop_h * (N_t_h - pt) * nh
-        - k_ht * nh
-        + k_hbt * nhPTAA
-        + k_detrap_h * pt
-    )
+    dnh = (-R_eh*ne*nh
+           - R_depop_e*nt*nh
+           - R_pop_h*(N_t_h-pt)*nh
+           - k_ht*nh
+           + k_hbt*nhPTAA
+           + k_detrap_h*pt)
 
-    dnt = (
-        R_pop_e * (N_t_e - nt) * ne
-        - R_depop_e * nt * nh
-        - k_detrap_e * nt
-    )
+    dnt = (R_pop_e*(N_t_e-nt)*ne
+           - R_depop_e*nt*nh
+           - k_detrap_e*nt)
 
-    dpt = (
-        R_pop_h * (N_t_h - pt) * nh
-        - R_depop_h * pt * ne
-        - k_detrap_h * pt
-    )
+    dpt = (R_pop_h*(N_t_h-pt)*nh
+           - R_depop_h*pt*ne
+           - k_detrap_h*pt)
 
-    dnhPTAA = k_ht * nh - k_hbt * nhPTAA - R_AI * ne * nhPTAA
+    dnhPTAA = (k_ht*nh
+               - k_hbt*nhPTAA
+               - R_AI*ne*nhPTAA)
 
-    return [dne, dnh, dnt, dpt, dnhPTAA] if use_hole_traps else [dne, dnh, dnt, dnhPTAA]
+    if use_hole_traps:
+        return [dne, dnh, dnt, dpt, dnhPTAA]
+    else:
+        return [dne, dnh, dnt, dnhPTAA]
 
-# ---------- Simulation ----------
 def simulate():
+    """Return both absolute and normalized PL for consistency."""
     if use_hole_traps:
         y0 = [n0, n0, f_nt0*N_t_e, f_pt0*N_t_h, 0.0]
     else:
         y0 = [n0, n0, f_nt0*N_t_e, 0.0]
-    sol = solve_ivp(deriv, t_span, y0, t_eval=t_eval, method='LSODA')
+
+    sol = solve_ivp(deriv, t_span, y0, t_eval=t_eval, method="LSODA")
     if use_hole_traps:
         ne, nh, nt, pt, nhPTAA = sol.y
     else:
         ne, nh, nt, nhPTAA = sol.y
         pt = np.zeros_like(ne)
-    PL = R_eh * ne * nh
-    if normalize_pl: PL /= PL[0]
-    return sol.t, ne, nh, nt, pt, nhPTAA, PL
+
+    PL_abs = R_eh * ne * nh
+    PL_norm = PL_abs / PL_abs[0]
+    if normalize_pl:
+        PL = PL_norm
+    else:
+        PL = PL_abs
+    return sol.t, ne, nh, nt, pt, nhPTAA, PL, PL_abs, PL_norm
+
 
 def compute_Seff():
-    t, ne, nh, nt, pt, nhPTAA, PL = simulate()
-    idx = np.argmin(np.abs(PL - 1/np.e))
+    t, ne, nh, nt, pt, nhPTAA, PL, PL_abs, PL_norm = simulate()
+    idx = np.argmin(np.abs(PL_norm - 1/np.e))
     nhPTAA_char = nhPTAA[idx]
     Seff = R_AI * nhPTAA_char * L
-    return Seff, t[idx], nhPTAA_char, (t, PL)
+    return Seff, t[idx], nhPTAA_char, (t, PL_norm)
 
-# ---------- Fit ----------
+
 def double_exp(t, A1, tau1, A2, tau2):
     return A1*np.exp(-t/tau1) + A2*np.exp(-t/tau2)
 
@@ -265,59 +178,65 @@ def fit_double_exp(t, pl):
     mask = pl > 1e-6
     t_fit, pl_fit = t[mask], pl[mask]
     p0 = [0.7, 5e-9, 0.3, 1e-7]
-    bounds = ([-np.inf, 1e-10, -np.inf, 1e-10], [np.inf, 1e-3, np.inf, 1e-3])
-    popt, _ = curve_fit(double_exp, t_fit, pl_fit, p0=p0, bounds=bounds, maxfev=20000)
+    bounds = ([-np.inf, 1e-10, -np.inf, 1e-10],
+              [np.inf, 1e-3, np.inf, 1e-3])
+    popt, _ = curve_fit(double_exp, t_fit, pl_fit, p0=p0,
+                        bounds=bounds, maxfev=20000)
     return popt, (t_fit, pl_fit)
 
-# ---------- Main simulation and plot ----------
+# ------------------------- MAIN SIMULATION ------------------------------
 Seff, t_char, nhPTAA_char, (t, PL) = compute_Seff()
 
 fig, ax = plt.subplots()
 ax.plot(t, PL, 'k.', markersize=3, label="Simulated PL")
-if log_xaxis: ax.set_xscale('log'); ax.set_yscale('log')
-else:          ax.set_xscale('linear'); ax.set_yscale('log')
-
-if do_fit:
-    try:
-        popt, (t_fit, pl_fit) = fit_double_exp(t, PL)
-        A1, tau1, A2, tau2 = popt
-        PL_model = double_exp(t_fit, *popt)
-        ax.plot(t_fit, PL_model, 'r-', label="Double-exp fit")
-        st.subheader("Fitted parameters")
-        st.write(f"tau1 = {tau1:.3e} s (fast ≈ extraction)")
-        st.write(f"tau2 = {tau2:.3e} s (slow ≈ bulk/interface)")
-        st.write(f"A1 = {A1:.2g}, A2 = {A2:.2g}")
-    except Exception as e:
-        st.warning(f"Fit failed: {e}")
-
+if log_xaxis:
+    ax.set_xscale('log'); ax.set_yscale('log')
+else:
+    ax.set_xscale('linear'); ax.set_yscale('log')
 ax.set_xlabel("Time (s)")
 ax.set_ylabel("Normalized PL")
 ax.set_ylim(1e-6, 1)
 ax.legend()
 st.pyplot(fig)
 
-#----------------- calc and plot diff lifetime
-# ---------- Differential lifetime calculation ----------
-# Compute d(ln(PL))/dt and tau_diff = -1 / (dlnPL/dt)
-t, ne, nh, nt, pt, nhPTAA, PL = simulate()
-mask = (PL > 1e-10)  # avoid numerical noise at tail
+# ----------------------- DIFFERENTIAL LIFETIME --------------------------
+t, ne, nh, nt, pt, nhPTAA, PL, PL_abs, PL_norm = simulate()
+mask = (PL > 1e-10)
 t_valid = t[mask]
 PL_valid = PL[mask]
 
-# Numerical derivative using np.gradient on log(t) grid
 dlnPL_dt = np.gradient(np.log(PL_valid), t_valid)
-tau_diff = -1.0 / dlnPL_dt
-
-# Smooth out numerical noise (optional)
+tau_diff = -2.0 / dlnPL_dt # need to multiply by 2 for high injection
 tau_diff = np.clip(tau_diff, 1e-12, 1e-3)
 
-# Create side-by-side plots
-fig3, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4))
+# Fit
+tau1 = tau2 = np.nan
+if do_fit:
+    try:
+        popt, (t_fit, pl_fit) = fit_double_exp(t, PL)
+        A1, tau1, A2, tau2 = popt
+        PL_model = double_exp(t_fit, *popt)
+    except Exception:
+        tau1 = tau2 = np.nan
+        PL_model = None
+
+# SRH lifetimes (bulk)
+Cn = R_pop_e
+Cp = R_depop_e
+tau_n0 = 1.0 / (Cn * N_t_e)
+tau_p0 = 1.0 / (Cp * N_t_e)
+tau_SRH_eff = tau_n0 + tau_p0
+
+# Interface lifetime
+tau_interface = L / Seff if Seff > 0 else np.nan
+
+# Plot PL + τ_diff
+fig2, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4))
 
 # Left: PL
-axL.plot(t, PL, 'k-', lw=1.5, label="Simulated PL")
-if do_fit:
-    axL.plot(t_fit, PL_model, 'r--', lw=1, label="Double-exp fit")
+axL.plot(t, PL, 'k-', lw=1.5, label="PL")
+if do_fit and PL_model is not None:
+    axL.plot(t_fit, PL_model, 'r--', lw=1, label="fit")
 axL.set_xscale('log'); axL.set_yscale('log')
 axL.set_xlabel("Time (s)")
 axL.set_ylabel("Normalized PL")
@@ -325,39 +244,155 @@ axL.set_ylim(1e-6, 1)
 axL.legend()
 axL.grid(True, which="both", ls="--", lw=0.5)
 
-# Right: differential lifetime
-axR.plot(t_valid, tau_diff, 'b-')
-axR.set_xscale('log')
-axR.set_yscale('log')
+# Right: τ_diff
+axR.plot(t_valid, tau_diff, 'b-', lw=1.2)
+axR.set_xscale('log'); axR.set_yscale('log')
 axR.set_xlabel("Time (s)")
 axR.set_ylabel("τ_diff (s)")
-axR.set_title("Differential lifetime τ_diff(t)")
 axR.grid(True, which="both", ls="--", lw=0.5)
 
-#st.pyplot(fig3)
+# Dynamic label helper
+# Compute and overlay reference lifetimes
+# Overlays with dynamic labels
+def label_line(y, color, text):
+    if not np.isfinite(y): return
+    axR.axhline(y, color=color, ls='--', lw=1.2)
+    x_pos = t_valid[int(len(t_valid) * 0.7)]
+    axR.text(x_pos, y * 1.1, text, color=color, fontsize=8)
 
-with st.expander("📈 Show differential lifetime τ_diff(t)"):
+# Compute and overlay reference lifetimes
+tau_rad = 1.0 / (R_eh * n0)
+label_line(tau_rad, 'gray', 'τ_rad')
+
+tau_ext = 1.0 / k_ht
+label_line(tau_ext, 'brown', 'τ_ext = 1/k_ht')
+
+label_line(tau_SRH_eff, 'orange', 'τ_SRH,eff')
+label_line(tau_interface, 'purple', 'τ_interface = L/S_eff')
+if do_fit and not np.isnan(tau1): label_line(tau1, 'green', 'τ1 (fit)')
+if do_fit and not np.isnan(tau2): label_line(tau2, 'red', 'τ2 (fit)')
+
+
+label_line(tau1, 'green', 'τ1 (fit)')
+label_line(tau2, 'red', 'τ2 (fit)')
+
+st.pyplot(fig2)
+
+# Export τ_diff data
+df_tau = pd.DataFrame({
+    "time_s": t_valid,
+    "PL_norm": PL_valid,
+    "tau_diff_s": tau_diff
+})
+st.download_button(
+    "💾 Download τ_diff and PL",
+    df_tau.to_csv(index=False).encode("utf-8"),
+    file_name="TRPL_tau_diff.csv",
+    mime="text/csv"
+)
+
+# ------------------------ DERIVED QUANTITIES ----------------------------
+st.subheader("Derived results and steady-state estimates")
+st.write(f"τ_n0 = {tau_n0:.2e} s (electron)")
+st.write(f"τ_p0 = {tau_p0:.2e} s (hole)")
+st.write(f"τ_SRH,eff ≈ {tau_SRH_eff:.2e} s")
+st.write(f"τ_interface = {tau_interface:.2e} s")
+st.write(f"S_eff = {Seff:.2e} cm/s")
+st.write(f"t_char (PL=1/e) = {t_char:.2e} s")
+st.write(f"n_h,PTAA(char) = {nhPTAA_char:.2e} cm⁻³")
+
+# -------------------- TRAP/CARRIER DYNAMICS EXPANDER -------------------
+with st.expander("📉 Trap, carrier, and extraction dynamics"):
+    fig3, ax3 = plt.subplots()
+
+    # Left axis: perovskite carrier and trap densities (log)
+    ax3.plot(t, ne/ne[0], label="ne/ne0")
+    ax3.plot(t, nh/nh[0], label="nh/nh0")
+    ax3.plot(t, nt/(N_t_e if N_t_e > 0 else 1), label="nt/N_t_e")
+    if use_hole_traps and N_t_h > 0:
+        ax3.plot(t, pt/(N_t_h if N_t_h > 0 else 1), label="pt/N_t_h")
+
+    ax3.set_xscale('log')
+    ax3.set_yscale('log')
+    ax3.set_ylim(1e-6, 1.2)
+    ax3.set_xlabel("Time (s)")
+    ax3.set_ylabel("Normalized perovskite quantities")
+    ax3.grid(True, which="both", ls="--", lw=0.5)
+
+    # Right axis: PTAA holes and extraction fraction (linear)
+    ax4 = ax3.twinx()
+    f_ext = nhPTAA / (nh + nhPTAA + 1e-30)  # fraction of holes in PTAA
+    ax4.plot(t, nhPTAA/n0, color='purple', lw=1.4, label="n_h,PTAA / n0")
+    ax4.plot(t, f_ext, color='orange', lw=1.2, ls='--',
+             label="f_ext = n_h,PTAA / (n_h + n_h,PTAA)")
+    ax4.set_ylabel("PTAA-related quantities (linear)")
+    ax4.set_ylim(0, 1.05)
+
+    # Combined legend
+    lines, labels = ax3.get_legend_handles_labels()
+    lines2, labels2 = ax4.get_legend_handles_labels()
+    ax3.legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
+
     st.pyplot(fig3)
 
 
 
-# ---------- Trap dynamics expander ----------
-with st.expander("📉 Show trap and carrier dynamics over time"):
-    t, ne, nh, nt, pt, nhPTAA, PL = simulate()
-    fig2, ax2 = plt.subplots()
-    ax2.plot(t, ne / ne[0], label="ne / ne0")
-    ax2.plot(t, nh / nh[0], label="nh / nh0")
-    ax2.plot(t, nt / (N_t_e if N_t_e > 0 else 1), label="nt / N_t_e")
-    if use_hole_traps:
-        ax2.plot(t, pt / (N_t_h if N_t_h > 0 else 1), label="pt / N_t_h")
-    ax2.set_xscale('log')
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("Normalized density")
-    ax2.set_ylim(1e-6, 1.1)
-    ax2.legend()
-    st.pyplot(fig2)
+# ---------------------- INFO / REFERENCE PANEL --------------------------
+with st.sidebar.expander("📘 Physical meaning, formulas, and reference values"):
+    st.markdown(r"""
+### Fundamental relations
 
-st.subheader("Derived quantities")
-st.write(f"Seff = {Seff:.2e} cm/s")
-st.write(f"Characteristic time (PL = 1/e): {t_char:.2e} s")
-st.write(f"n_h,PTAA(char) = {nhPTAA_char:.2e} cm⁻³")
+- Thermal velocity  
+  \[
+  v_{th} = \sqrt{\frac{3 k_B T}{m^*}}
+  \]
+
+- Trapping (capture) coefficient  
+  \[
+  R_{pop} = \sigma \, v_{th}
+  \]
+
+- Detrapping (thermal emission) rate  
+  \[
+  k_{detrap} = \nu_0 \, e^{-E_t / (k_B T)}
+  \]
+
+- SRH hole capture on filled electron traps  
+  \[
+  R_{depop,e} = \sigma_h^{(\mathrm{trap})} \, v_{th}
+  \]
+
+### Typical values
+
+| Quantity | Typical value | Units |
+|---------|---------------|-------|
+| \(v_{th}\) | 1–2×10⁷ | cm/s |
+| σ | 10⁻¹⁶–10⁻¹⁸ | cm² |
+| \(E_t\) | 0.3–0.6 | eV |
+| \(\nu_0\) | 10¹³ | s⁻¹ |
+| \(R_{pop}\) | 10⁻⁹–10⁻¹¹ | cm³/s |
+| \(k_{detrap}\) | 10⁰–10⁶ | s⁻¹ |
+
+Smaller σ → slower trapping  
+Deeper \(E_t\) → slower detrapping
+""")
+    st.markdown("---")
+    st.markdown("### 🔬 Detrapping-rate explorer")
+
+    T_calc = st.number_input("Temperature for k_detrap plot (K)", 100, 800, int(T), step=50)
+    E_vals = np.linspace(0.1, 0.8, 200)
+    k_vals = nu0 * np.exp(-E_vals / (k_B * T_calc))
+
+    fig_calc, ax_calc = plt.subplots()
+    ax_calc.semilogy(E_vals, k_vals)
+    ax_calc.set_xlabel("Trap depth E_t (eV)")
+    ax_calc.set_ylabel("k_detrap (s⁻¹)")
+    ax_calc.set_title(f"k_detrap vs E_t at T = {T_calc} K")
+    ax_calc.grid(True, which="both", ls="--", lw=0.5)
+    st.pyplot(fig_calc)
+
+    if use_physical and "E_t_e" in locals():
+        k_example = nu0 * np.exp(-E_t_e / (k_B * T))
+        st.markdown(f"**Example:** For E_t = {E_t_e:.2f} eV at {T:.0f} K → k_detrap ≈ {k_example:.2e} s⁻¹")
+    else:
+        st.markdown("Enable physical mode and set E_t_e to see a numerical k_detrap example.")
