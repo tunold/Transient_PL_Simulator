@@ -167,6 +167,27 @@ R_{depop,e} = \sigma_h^{(trap)} \, v_{th,h}
 - Deep traps (E_t ≈ 0.6 eV) are long-lived (k_detrap ≈ 10² s⁻¹)
 """)
 
+    # --- Interactive detrapping-rate calculator ---
+    st.markdown("---")
+    st.markdown("### 🔬 Detrapping rate explorer")
+    st.markdown("Compute and visualize how k_detrap varies with trap depth and temperature.")
+
+    T_calc = st.number_input("Temperature for plot (K)", 100, 800, int(T), step=50)
+    E_min, E_max = 0.1, 0.8
+    E_vals = np.linspace(E_min, E_max, 200)
+    k_vals = nu0 * np.exp(-E_vals / (k_B * T_calc))
+
+    fig_calc, ax_calc = plt.subplots()
+    ax_calc.semilogy(E_vals, k_vals)
+    ax_calc.set_xlabel("Trap depth E_t (eV)")
+    ax_calc.set_ylabel("k_detrap (s⁻¹)")
+    ax_calc.set_title(f"Thermal emission rate vs. trap depth (T = {T_calc} K)")
+    ax_calc.grid(True, which="both", ls="--", lw=0.5)
+    st.pyplot(fig_calc)
+
+    k_example = nu0 * np.exp(-E_t_e / (k_B * T))
+    st.markdown(f"**Example:** For Eₜ = {E_t_e:.2f} eV at {T:.0f} K → k_detrap = {k_example:.2e} s⁻¹")
+
 
 # ---------- Time grid ----------
 t_eval = np.logspace(-9, -5, 400)
@@ -274,6 +295,51 @@ ax.set_ylabel("Normalized PL")
 ax.set_ylim(1e-6, 1)
 ax.legend()
 st.pyplot(fig)
+
+#----------------- calc and plot diff lifetime
+# ---------- Differential lifetime calculation ----------
+# Compute d(ln(PL))/dt and tau_diff = -1 / (dlnPL/dt)
+t, ne, nh, nt, pt, nhPTAA, PL = simulate()
+mask = (PL > 1e-10)  # avoid numerical noise at tail
+t_valid = t[mask]
+PL_valid = PL[mask]
+
+# Numerical derivative using np.gradient on log(t) grid
+dlnPL_dt = np.gradient(np.log(PL_valid), t_valid)
+tau_diff = -1.0 / dlnPL_dt
+
+# Smooth out numerical noise (optional)
+tau_diff = np.clip(tau_diff, 1e-12, 1e-3)
+
+# Create side-by-side plots
+fig3, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4))
+
+# Left: PL
+axL.plot(t, PL, 'k-', lw=1.5, label="Simulated PL")
+if do_fit:
+    axL.plot(t_fit, PL_model, 'r--', lw=1, label="Double-exp fit")
+axL.set_xscale('log'); axL.set_yscale('log')
+axL.set_xlabel("Time (s)")
+axL.set_ylabel("Normalized PL")
+axL.set_ylim(1e-6, 1)
+axL.legend()
+axL.grid(True, which="both", ls="--", lw=0.5)
+
+# Right: differential lifetime
+axR.plot(t_valid, tau_diff, 'b-')
+axR.set_xscale('log')
+axR.set_yscale('log')
+axR.set_xlabel("Time (s)")
+axR.set_ylabel("τ_diff (s)")
+axR.set_title("Differential lifetime τ_diff(t)")
+axR.grid(True, which="both", ls="--", lw=0.5)
+
+#st.pyplot(fig3)
+
+with st.expander("📈 Show differential lifetime τ_diff(t)"):
+    st.pyplot(fig3)
+
+
 
 # ---------- Trap dynamics expander ----------
 with st.expander("📉 Show trap and carrier dynamics over time"):
