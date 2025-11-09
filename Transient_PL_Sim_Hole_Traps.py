@@ -70,21 +70,77 @@ with st.sidebar.expander("⚡ Hole traps (optional)"):
             k_detrap_h = st.number_input("k_detrap_h (s⁻¹)", 1e0, 1e30, 1e5, format="%.1e")
         R_depop_h = st.number_input("R_depop_h (cm³/s)", 1e-30, 1e30, 5e-9, format="%.1e")
 
-# ---------- Interface parameters ----------
+# ---------- Presets (must be before we define interface parameters) ----------
+st.sidebar.subheader("Presets")
+
+preset = st.sidebar.selectbox(
+    "Parameter preset",
+    [
+        "Custom / keep sliders",
+        "Good interface (fast extraction, low R_AI)",
+        "Bad interface (fast extraction, high R_AI)",
+        "Bulk only (no extraction, no interface recomb)"
+    ]
+)
+
+# initialize session_state defaults if not present
+if "k_ht" not in st.session_state:
+    st.session_state.k_ht = 1e8
+if "k_hbt" not in st.session_state:
+    st.session_state.k_hbt = 1e6
+if "R_AI" not in st.session_state:
+    st.session_state.R_AI = 1e-8
+
+if "current_preset" not in st.session_state:
+    st.session_state.current_preset = "Custom / keep sliders"
+
+# apply preset if changed
+if preset != st.session_state.current_preset:
+    st.session_state.current_preset = preset
+
+    if preset == "Good interface (fast extraction, low R_AI)":
+        st.session_state.k_ht  = 1e9
+        st.session_state.k_hbt = 1e5
+        st.session_state.R_AI  = 1e-10
+
+    elif preset == "Bad interface (fast extraction, high R_AI)":
+        st.session_state.k_ht  = 1e9
+        st.session_state.k_hbt = 1e6
+        st.session_state.R_AI  = 1e-7
+
+    elif preset == "Bulk only (no extraction, no interface recomb)":
+        # your requested preset: negligible extraction and interface loss
+        st.session_state.k_ht  = 1.0    # ~ no extraction
+        st.session_state.k_hbt = 1.0    # ~ no back-transfer dynamics
+        st.session_state.R_AI  = 0.0    # no interface recombination
+
+    # "Custom / keep sliders" leaves current values as they are
+
+# ---------- Extraction & interface block ----------
 with st.sidebar.expander("🔄 Extraction & interface"):
-    k_ht = st.number_input("Hole transfer k_ht (s⁻¹)", 1e0, 1e30, 1e8, format="%.1e")
-    k_hbt = st.number_input("Back transfer k_hbt (s⁻¹)", 1e0, 1e30, 1e6, format="%.1e")
+    k_ht = st.number_input(
+        "Hole transfer k_ht (s⁻¹)",
+        1e0, 1e30,
+        value=st.session_state.k_ht,
+        key="k_ht",
+        format="%.1e"
+    )
+    k_hbt = st.number_input(
+        "Back transfer k_hbt (s⁻¹)",
+        1e0, 1e30,
+        value=st.session_state.k_hbt,
+        key="k_hbt",
+        format="%.1e"
+    )
+    R_AI = st.number_input(
+        "Interface recombination R_AI (cm³/s)",
+        1e-20, 1e-3,
+        value=st.session_state.R_AI,
+        key="R_AI",
+        format="%.1e"
+    )
+    st.markdown("*(Effective interface recombination constant used in ODEs.)*")
 
-    # R_AI as direct effective parameter
-    R_AI = st.number_input("Interface recombination R_AI (cm³/s)",
-                           1e-20, 1e-3, 1e-8, format="%.1e")
-
-    st.markdown("**Optional: interface-trap-based S estimate (not directly used in ODE)**")
-    N_it = st.number_input("Interface trap density N_it (cm⁻²)", 1e8, 1e15, 1e12, format="%.1e")
-    sigma_n_int = st.number_input("Electron σ_n,int (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
-    sigma_p_int = st.number_input("Hole σ_p,int (cm²)", 1e-22, 1e-14, 1e-17, format="%.1e")
-    S_int = (sigma_n_int + sigma_p_int) * vth * N_it  # cm/s
-    st.write(f"→ S_int ≈ {S_int:.2e} cm/s (for reference only)")
 
 
 # ---------- Initial conditions ----------
@@ -187,17 +243,18 @@ def fit_double_exp(t, pl):
 # ------------------------- MAIN SIMULATION ------------------------------
 Seff, t_char, nhPTAA_char, (t, PL) = compute_Seff()
 
-fig, ax = plt.subplots()
-ax.plot(t, PL, 'k.', markersize=3, label="Simulated PL")
-if log_xaxis:
-    ax.set_xscale('log'); ax.set_yscale('log')
-else:
-    ax.set_xscale('linear'); ax.set_yscale('log')
-ax.set_xlabel("Time (s)")
-ax.set_ylabel("Normalized PL")
-ax.set_ylim(1e-6, 1)
-ax.legend()
-st.pyplot(fig)
+with st.expander("Plot Simulated PL"):
+    fig, ax = plt.subplots()
+    ax.plot(t, PL, 'k.', markersize=3, label="Simulated PL")
+    if log_xaxis:
+        ax.set_xscale('log'); ax.set_yscale('log')
+    else:
+        ax.set_xscale('linear'); ax.set_yscale('log')
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Normalized PL")
+    ax.set_ylim(1e-6, 1)
+    ax.legend()
+    st.pyplot(fig)
 
 # ----------------------- DIFFERENTIAL LIFETIME --------------------------
 t, ne, nh, nt, pt, nhPTAA, PL, PL_abs, PL_norm = simulate()
@@ -292,14 +349,14 @@ st.download_button(
 )
 
 # ------------------------ DERIVED QUANTITIES ----------------------------
-st.subheader("Derived results and steady-state estimates")
-st.write(f"τ_n0 = {tau_n0:.2e} s (electron)")
-st.write(f"τ_p0 = {tau_p0:.2e} s (hole)")
-st.write(f"τ_SRH,eff ≈ {tau_SRH_eff:.2e} s")
-st.write(f"τ_interface = {tau_interface:.2e} s")
-st.write(f"S_eff = {Seff:.2e} cm/s")
-st.write(f"t_char (PL=1/e) = {t_char:.2e} s")
-st.write(f"n_h,PTAA(char) = {nhPTAA_char:.2e} cm⁻³")
+with st.expander("Derived results and steady-state estimates"):
+    st.write(f"τ_n0 = {tau_n0:.2e} s (electron)")
+    st.write(f"τ_p0 = {tau_p0:.2e} s (hole)")
+    st.write(f"τ_SRH,eff ≈ {tau_SRH_eff:.2e} s")
+    st.write(f"τ_interface = {tau_interface:.2e} s")
+    st.write(f"S_eff = {Seff:.2e} cm/s")
+    st.write(f"t_char (PL=1/e) = {t_char:.2e} s")
+    st.write(f"n_h,PTAA(char) = {nhPTAA_char:.2e} cm⁻³")
 
 # -------------------- TRAP/CARRIER DYNAMICS EXPANDER -------------------
 with st.expander("📉 Trap, carrier, and extraction dynamics"):
