@@ -51,7 +51,7 @@ preset = st.sidebar.selectbox(
         "Custom / keep sliders",
         "Good interface (fast extraction, low R_AI)",
         "Bad interface (fast extraction, high R_AI)",
-        "Bulk only (no extraction, no interface recomb)",
+        "Bulk only (no extraction, no interface recomb, defect values from sliders)",
         "Trap-dominated bulk"
     ]
 )
@@ -65,7 +65,7 @@ if preset != st.session_state.get("current_preset", ""):
     elif preset == "Bad interface (fast extraction, high R_AI)":
         st.session_state.update(dict(k_ht=1e9, k_hbt=1e6, R_AI=1e-7))
 
-    elif preset == "Bulk only (no extraction, no interface recomb)":
+    elif preset == "Bulk only (no extraction, no interface recomb, defect values from sliders)":
         st.session_state.update(dict(k_ht=1.0, k_hbt=1.0, R_AI=0.0))
 
     elif preset == "Trap-dominated bulk":
@@ -199,7 +199,7 @@ if preset != st.session_state.current_preset:
         st.session_state.k_hbt = 1e6
         st.session_state.R_AI  = 1e-7
 
-    elif preset == "Bulk only (no extraction, no interface recomb)":
+    elif preset == "Bulk only (no extraction, no interface recomb, defect values from sliders)":
         # your requested preset: negligible extraction and interface loss
         st.session_state.k_ht  = 1.0    # ~ no extraction
         st.session_state.k_hbt = 1.0    # ~ no back-transfer dynamics
@@ -442,7 +442,7 @@ tau_interface = L / Seff if Seff > 0 else np.nan
 preset_descriptions = {
     "Good interface (fast extraction, low R_AI)": "Efficient extraction, low interface loss",
     "Bad interface (fast extraction, high R_AI)": "Strong interface recombination dominates",
-    "Bulk only (no extraction, no interface recomb)": "Intrinsic bulk decay, no interface coupling",
+    "Bulk only (no extraction, no interface recomb, defect values from sliders)": "Intrinsic bulk decay, no interface coupling",
     "Trap-dominated bulk": "High trap density and large σ_h → SRH-limited",
     "Custom / keep sliders": "User-defined custom configuration"
 }
@@ -461,14 +461,33 @@ fig2, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4))
 axL.plot(t, PL, 'k-', lw=1.5, label="PL")
 if do_fit and PL_model is not None:
     axL.plot(t_fit, PL_model, 'r--', lw=1, label="fit")
-if np.isfinite(t_noise):
-    # Horizontal noise band
-    axL.axhline(noise_level, color='gray', ls='--', lw=1)
+if np.isfinite(t_noise) and np.any(PL < noise_level):
+    # Horizontal dashed line at noise floor
+    axL.axhline(noise_level, color='gray', ls='--', lw=1, label="Noise floor")
+
+    # Shade region below noise floor
+    y_min, y_max = axL.get_ylim()
+    y_bottom = max(y_min, 1e-12)  # prevent 0 on log scale
     axL.fill_between(
-        t, noise_level, 1e-6,
+        t,
+        y1=noise_level,
+        y2=y_bottom,
         where=(PL < noise_level),
-        color='gray', alpha=0.2, label="Below noise floor"
+        color='gray',
+        alpha=0.2,
+        label="Below noise floor"
     )
+
+    # Optional: annotate noise floor value
+    axL.text(
+        t[5], noise_level * 1.2,
+        f"S/N={SNR:.0f}:1",
+        color="gray",
+        fontsize=8,
+        va="bottom",
+        ha="left"
+    )
+
 
 axL.set_xscale('log'); axL.set_yscale('log')
 axL.set_xlabel("Time (s)")
@@ -570,25 +589,80 @@ axR.grid(True, which="both", ls="--", lw=0.5)
 # Dynamic label helper
 # Compute and overlay reference lifetimes
 # Overlays with dynamic labels
-def label_line(y, color, text):
-    if not np.isfinite(y): return
-    axR.axhline(y, color=color, ls='--', lw=1.2)
-    x_pos = t_valid[int(len(t_valid) * 0.7)]
-    axR.text(x_pos, y * 1.1, text, color=color, fontsize=8)
+# ---------------------------------------------------------------------
+# Adaptive horizontal reference lines with automatic label spacing (τ_diff plot)
+# ---------------------------------------------------------------------
+def draw_tau_ref_lines(ax, refs, t_for_labels, log_yaxis=True):
+    """
+    Draws horizontal reference lines (y, color, label) on ax,
+    with automatic label offset to reduce overlap.
+
+    refs: list of tuples [(y, color, label), ...]
+    t_for_labels: array of times to choose label x-position from (e.g. t_valid)
+    """
+    # filter finite values and sort by lifetime
+    valid = [(y, c, l) for (y, c, l) in refs if np.isfinite(y)]
+    valid.sort(key=lambda r: r[0])  # sort by y (lifetime)
+
+    if len(valid) == 0:
+        return
+
+    last_y = None
+    # two x positions to alternate between
+    x_far = t_for_labels[int(len(t_for_labels) * 0.8)]
+    x_near = t_for_labels[int(len(t_for_labels) * 0.6)]
+
+    for i, (y, color, label) in enumerate(valid):
+        ax.axhline(y, color=color, ls='--', lw=1.2, alpha=0.9)
+
+        # decide horizontal position depending on closeness in τ
+        if log_yaxis:
+            if last_y is not None and (y / last_y) < 1.5:
+                x_pos = x_near   # shift a bit left if too close in τ
+            else:
+                x_pos = x_far
+        else:
+            if last_y is not None and abs(y - last_y) < 0.1 * y:
+                x_pos = x_near
+            else:
+                x_pos = x_far
+
+        # small vertical offset for label so it doesn't sit exactly on the line
+        y_label = y * (1.03 if log_yaxis else 1.02)
+
+        ax.text(
+            x_pos, y_label,
+            label,
+            color=color,
+            fontsize=8,
+            va="bottom",
+            ha="left"
+        )
+
+        last_y = y
 
 
+# ---- build list of τ references and draw them on axR ----
+#tau_rad = 1.0 / (R_eh * n0)
+#tau_ext = 1.0 / k_ht
+#tau_bt  = 1.0 / k_hbt if k_hbt > 0 else np.nan
+#tau_A_bulk = 1.0 / (R_A_bulk * n0) if R_A_bulk > 0 else np.nan  # if you added R_A_bulk ref
 
-label_line(tau_rad, 'gray', 'τ_rad')
-label_line(tau_SRH_eff, 'orange', 'τ_SRH,eff')
-label_line(tau_interface, 'purple', 'τ_interface = L/S_eff')
-label_line(tau_ext, 'brown', 'τ_ext = 1/k_ht')
-label_line(tau_bt, 'magenta', 'τ_bt = 1/k_hbt')
-label_line(tau_A_bulk, 'cyan', 'τ_A,bulk = 1/(R_A_bulk·n0)')
+tau_refs = [
+    (tau_rad,        'gray',    'τ_rad'),
+    (tau_SRH_eff,    'orange',  'τ_SRH,eff'),
+    (tau_interface,  'purple',  'τ_interface'),
+    (tau_ext,        'brown',   'τ_ext = 1/k_ht'),
+    (tau_bt,         'magenta', 'τ_bt = 1/k_hbt'),
+    (tau_A_bulk,     'cyan',    'τ_A,bulk')  # optional, if you use R_A_bulk
+]
 
-if do_fit and not np.isnan(tau1):
-    label_line(tau1, 'green', 'τ1 (fit)')
-if do_fit and not np.isnan(tau2):
-    label_line(tau2, 'red', 'τ2 (fit)')
+if do_fit and np.isfinite(tau1):
+    tau_refs.append((tau1, 'green', 'τ1 (fit)'))
+if do_fit and np.isfinite(tau2):
+    tau_refs.append((tau2, 'red',   'τ2 (fit)'))
+
+draw_tau_ref_lines(axR, tau_refs, t_valid, log_yaxis=True)
 
 
 st.pyplot(fig2)
